@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>To-Do App with IndexedDB and Encryption</title>
+    <style>
+        /* Same CSS as before */
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+
+        .container {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            width: 300px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+
+        .input-section {
+            display: flex;
+            margin-bottom: 20px;
+        }
+
+        #taskInput {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            margin-right: 10px;
+        }
+
+        #addTaskButton {
+            padding: 10px;
+            border: none;
+            background-color: #28a745;
+            color: #fff;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+
+        #taskList {
+            list-style: none;
+            padding: 0;
+        }
+
+        #taskList li {
+            padding: 10px;
+            border-bottom: 1px solid #ccc;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        #taskList li.completed {
+            text-decoration: line-through;
+            color: gray;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>To-Do List</h1>
+        <div class="input-section">
+            <input type="text" id="taskInput" placeholder="Enter a new task...">
+            <button id="addTaskButton">Add Task</button>
+        </div>
+        <ul id="taskList"></ul>
+    </div>
+    <script>
+        // Initialization code
+        const dbName = "todoApp";
+        const dbVersion = 1;
+        let db;
+        const encryptionKey = 'your-secret-key';
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const request = indexedDB.open(dbName, dbVersion);
+
+            request.onerror = (event) => {
+                console.error('Database error:', event.target.errorCode);
+            };
+
+            request.onsuccess = (event) => {
+                db = event.target.result;
+                loadTasks();
+            };
+
+            request.onupgradeneeded = (event) => {
+                db = event.target.result;
+                const objectStore = db.createObjectStore("tasks", { keyPath: "id", autoIncrement: true });
+                objectStore.createIndex("task", "task", { unique: false });
+                objectStore.createIndex("completed", "completed", { unique: false });
+            };
+
+            const taskInput = document.getElementById('taskInput');
+            const addTaskButton = document.getElementById('addTaskButton');
+            const taskList = document.getElementById('taskList');
+
+            addTaskButton.addEventListener('click', async () => {
+                const taskText = taskInput.value.trim();
+
+                if (taskText !== '') {
+                    const encryptedTask = await encryptData(taskText, encryptionKey);
+                    const newTask = {
+                        task: encryptedTask,
+                        completed: false
+                    };
+                    addTaskToDB(newTask);
+                    taskInput.value = '';
+                }
+            });
+        });
+
+        async function loadTasks() {
+            const transaction = db.transaction(["tasks"], "readonly");
+            const objectStore = transaction.objectStore("tasks");
+
+            objectStore.openCursor().onsuccess = async (event) => {
+                const cursor = event.target.result;
+                if (cursor) {
+                    const decryptedTask = await decryptData(cursor.value.task, encryptionKey);
+                    displayTask(decryptedTask, cursor.value);
+                    cursor.continue();
+                }
+            };
+        }
+
+        function displayTask(task, taskObject) {
+            const taskList = document.getElementById('taskList');
+            const taskItem = document.createElement('li');
+            taskItem.textContent = task;
+
+            if (taskObject.completed) {
+                taskItem.classList.add('completed');
+            }
+
+            taskItem.addEventListener('click', async () => {
+                taskItem.classList.toggle('completed');
+                taskObject.completed = !taskObject.completed;
+                updateTaskInDB(taskObject);
+            });
+
+            taskList.appendChild(taskItem);
+        }
+
+        function addTaskToDB(task) {
+            const transaction = db.transaction(["tasks"], "readwrite");
+            const objectStore = transaction.objectStore("tasks");
+            const request = objectStore.add(task);
+
+            request.onsuccess = () => {
+                // Task added successfully
+            };
+
+            request.onerror = (event) => {
+                console.error('Error adding task:', event.target.errorCode);
+            };
+        }
+
+        function updateTaskInDB(task) {
+            const transaction = db.transaction(["tasks"], "readwrite");
+            const objectStore = transaction.objectStore("tasks");
+            const request = objectStore.put(task);
+
+            request.onerror = (event) => {
+                console.error('Error updating task:', event.target.errorCode);
+            };
+        }
+
+        async function encryptData(data, key) {
+            const encoder = new TextEncoder();
+            const encodedData = encoder.encode(data);
+            const cryptoKey = await window.crypto.subtle.importKey(
+                'raw',
+                new TextEncoder().encode(key),
+                { name: 'AES-GCM', length: 256 },
+                false,
+                ['encrypt']
+            );
+            const iv = window.crypto.getRandomValues(new Uint8Array(12));
+            const encryptedData = await window.crypto.subtle.encrypt(
+                { name: 'AES-GCM', iv: iv },
+                cryptoKey,
+                encodedData
+            );
+            return { iv: Array.from(iv), data: Array.from(new Uint8Array(encryptedData)) };
+        }
+
+        async function decryptData(encryptedData, key) {
+            const iv = new Uint8Array(encryptedData.iv);
+            const data = new Uint8Array(encryptedData.data);
+            const cryptoKey = await window.crypto.subtle.importKey(
+                'raw',
+                new TextEncoder
+                .encode(key),
+                { name: 'AES-GCM', length: 256 },
+                false,
+                ['decrypt']
+            );
+            const decryptedData = await window.crypto.subtle.decrypt(
+                { name: 'AES-GCM', iv: iv },
+                cryptoKey,
+                new Uint8Array(data)
+            );
+            return new TextDecoder().decode(decryptedData);
+        }
+    </script>
+</body>
+</html>
